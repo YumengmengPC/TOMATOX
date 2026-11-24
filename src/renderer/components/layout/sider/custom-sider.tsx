@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Menu } from 'antd';
 import {
     FireOutlined,
@@ -17,9 +17,7 @@ import cssM from './custom-sider.scss';
 
 export default function CustomSider(props: any) {
     const [path, setPath] = useState(window.location.hash.slice(1));
-    store.subscribe('CURRENT_PATH', (newPath: string) => {
-        setPath(newPath);
-    });
+    useEffect(() => store.subscribe('CURRENT_PATH', setPath), []);
 
     return (
         <>

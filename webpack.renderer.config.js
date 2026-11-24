@@ -3,13 +3,12 @@ const merge = require('webpack-merge');
 const CopyWebpackPlugin = require('copy-webpack-plugin');
 const HtmlWebpackPlugin = require('html-webpack-plugin');
 const InterpolateHtmlPlugin = require('interpolate-html-plugin');
-const ForkTsCheckerWebpackPlugin = require('fork-ts-checker-webpack-plugin');
 const MiniCssExtractPlugin = require('mini-css-extract-plugin')
 const path = require('path')
 const baseConfig = require('./webpack.base.config');
 
 module.exports = merge.smart(baseConfig, {
-    target: 'electron-renderer',
+    target: 'web',
     entry: {
         app: ['@babel/polyfill','./src/renderer/app.tsx']
     },
@@ -20,12 +19,11 @@ module.exports = merge.smart(baseConfig, {
                 exclude: /node_modules/,
                 loader: 'babel-loader',
                 options: {
-                    cacheDirectory: true,
                     babelrc: false,
                     presets: [
                         [
                             '@babel/preset-env',
-                            { targets: { browsers: 'last 2 versions ' } }
+                            { targets: { chrome: '65' }, loose: true }
                         ],
                     ],
                     plugins: [
@@ -38,12 +36,11 @@ module.exports = merge.smart(baseConfig, {
                 exclude: /node_modules/,
                 loader: 'babel-loader',
                 options: {
-                    cacheDirectory: true,
                     babelrc: false,
                     presets: [
                         [
                             '@babel/preset-env',
-                            { targets: { browsers: 'last 2 versions ' } }
+                            { targets: { chrome: '65' }, loose: true }
                         ],
                         '@babel/preset-typescript',
                         '@babel/preset-react'
@@ -101,9 +98,6 @@ module.exports = merge.smart(baseConfig, {
     plugins: [
         new MiniCssExtractPlugin({
             filename: '[name].css'
-        }),
-        new ForkTsCheckerWebpackPlugin({
-            reportFiles: ['src/renderer/**/*']
         }),
         new webpack.NamedModulesPlugin(),
         new CopyWebpackPlugin([{

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { Input, message } from 'antd';
 import {
     BugOutlined,
@@ -17,8 +17,6 @@ import store from '@/utils/store';
 import cssModule from './custom-header.scss';
 import { setTheme } from '@/utils/db/storage';
 
-const { ipcRenderer } = require('electron');
-
 function developingMsg() {
     message.info({
         content: '功能正在开发中...',
@@ -35,24 +33,20 @@ function changeTheme() {
 }
 
 export default function CustomHeader() {
-    const [searchEnable, setSearchEnable] = useState(store.getState('GLOBAL_SEARCH_ENABLE'));
-    store.subscribe('GLOBAL_SEARCH_ENABLE', (newVal: boolean) => {
-        setSearchEnable(newVal);
-    });
-    async function onSearch(keyword: string) {
-        store.setState('GLOBAL_SEARCH_ENABLE', false);
-        store.setState('SEARCH_KEYWORDS', keyword);
+    function onSearch(keyword: string) {
+        const searchText = keyword.trim();
+        if (!searchText) return;
+        store.setState('SEARCH_KEYWORDS', searchText);
         Control.go('/search');
     }
     return (
         <div className={cssModule.headerWrapper}>
             <Input.Search
-                loading={!searchEnable}
-                placeholder="电影、电视剧、综艺..."
+                placeholder="搜索当前视频源"
                 onSearch={onSearch}
                 enterButton={
                     <span>
-                        <SearchOutlined /> 全网搜
+                        <SearchOutlined /> 搜索
                     </span>
                 }
                 className={cssModule.headerInput}
@@ -61,7 +55,7 @@ export default function CustomHeader() {
                 {process.env.NODE_ENV !== 'production' && (
                     <BugOutlined
                         onClick={() => {
-                            ipcRenderer.send('WINDOW_DEBUG');
+                            window.tomatox.openDevTools();
                         }}
                         />
                 )}
@@ -80,17 +74,17 @@ export default function CustomHeader() {
             <span className={cssModule.operationBtn}>
                 <MinusOutlined
                     onClick={() => {
-                        ipcRenderer.send('WINDOW_MIN');
+                        window.tomatox.minimize();
                     }}
                     />
                 <BlockOutlined
                     onClick={() => {
-                        ipcRenderer.send('WINDOW_MAX');
+                        window.tomatox.toggleMaximized();
                     }}
                     />
                 <CloseOutlined
                     onClick={() => {
-                        ipcRenderer.send('WINDOW_CLOSE');
+                        window.tomatox.close();
                     }}
                     />
             </span>

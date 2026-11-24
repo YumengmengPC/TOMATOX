@@ -12,19 +12,35 @@ on:
 jobs:
   release:
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
 
     strategy:
       matrix:
         os: [windows-latest, macos-latest, ubuntu-latest]
 
     steps:
-      - uses: actions/checkout@v2
-      - uses: actions/setup-node@v1
+      - uses: actions/checkout@v4
         with:
-          node-version: 12
+          fetch-depth: 0
+      - name: Check release tag
+        id: tag
+        shell: bash
+        run: |
+          subject=$(git for-each-ref --format='%(contents:subject)' "$GITHUB_REF")
+          if [ "$subject" = 'Manual release: Windows installer' ]; then
+            echo 'publish=false' >> "$GITHUB_OUTPUT"
+          else
+            echo 'publish=true' >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/setup-node@v4
+        if: steps.tag.outputs.publish == 'true'
+        with:
+          node-version: 22
 
       - run: |
-          npm install
+          npm ci --legacy-peer-deps
           npm run release
+        if: steps.tag.outputs.publish == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

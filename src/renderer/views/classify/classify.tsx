@@ -1,116 +1,76 @@
+import ResourcePager from '@/utils/request/resourcePager';
 import React, { ReactElement } from 'react';
 import InfiniteScroll from 'react-infinite-scroller';
 import TomatoxWaterfall from '@/components/tomatox-waterfall/tomatox-waterfall';
-import { Spin } from 'antd';
+import { Spin, Button } from 'antd';
 import CustomSpin from '@/components/custom-spin/custom-spin';
 import { queryResources, queryTypes } from '@/utils/request/modules/queryResources';
 import store from '@/utils/store';
-import { filterResources } from '@/utils/filterResources';
 import cssM from './classify.scss';
 
-export default class Classify extends React.Component<any, any> {
-    private page = 0;
-    private pageCount = 10;
+export default class Classify extends React.Component<{}, { types: Record<string, number>; selectedType: string; cardsData: IplayResource[]; hasMore: boolean; loading: boolean; error: boolean }> {
+    private pages = new ResourcePager();
+    private unsubscribe?: () => void;
+    private revision = 0;
+    state = {
+        types: {} as Record<string, number>, selectedType: '',
+        cardsData: [] as IplayResource[], hasMore: false, loading: false, error: false
+    };
 
-    constructor(props: any) {
-        super(props);
-        this.state = {
-            types: {},
-            selectedType: '',
-            cardsData: [],
-            recommendLoading: false
-        };
+    componentDidMount() {
+        this.unsubscribe = store.subscribe('SITE_ADDRESS', this.refresh);
+        void this.refresh();
     }
 
-    async componentWillMount() {
-        this.initResource();
-        store.subscribe('SITE_ADDRESS', () => {
-            this.page = 0;
-            this.pageCount = 10;
-            this.setState(
-                {
-                    types: {},
-                    selectedType: '',
-                    cardsData: [],
-                    recommendLoading: false
-                },
-                this.initResource
-            );
+    componentWillUnmount() {
+        this.unsubscribe?.();
+        this.pages.reset();
+        this.revision++;
+    }
+
+    private refresh = async () => {
+        const revision = ++this.revision;
+        this.pages.reset();
+        const origin: Iorigin = store.getState('SITE_ADDRESS');
+        this.setState({ types: {}, selectedType: '', cardsData: [], hasMore: false, loading: true, error: false });
+        try {
+            const entries = await queryTypes(origin);
+            if (revision !== this.revision) return;
+            const types = Object.fromEntries(entries.map(({ text, id }) => [text, id]));
+            const selectedType = Object.keys(types)[0] ?? '';
+            this.setState({ types, selectedType, loading: false }, () => {
+                if (selectedType && revision === this.revision) void this.loadMore();
+            });
+        } catch {
+            if (revision === this.revision) this.setState({ loading: false, error: true });
+        }
+    };
+
+    private loadMore = async () => {
+        if (this.state.loading) return;
+        const revision = this.revision;
+        const origin: Iorigin = store.getState('SITE_ADDRESS');
+        const type = this.state.types[this.state.selectedType];
+        this.setState({ loading: true, error: false });
+        try {
+            const result = await this.pages.next(page => queryResources(page, type, undefined, undefined, origin));
+            if (result && revision === this.revision) {
+                this.setState(state => ({ cardsData: [...state.cardsData, ...result.list], hasMore: result.hasMore }));
+            }
+        } catch {
+            if (revision === this.revision) this.setState({ error: true });
+        } finally {
+            if (revision === this.revision) this.setState({ loading: false });
+        }
+    };
+
+    private changeType(key: string) {
+        if (key === this.state.selectedType) return;
+        const revision = ++this.revision;
+        this.pages.reset();
+        this.setState({ selectedType: key, cardsData: [], hasMore: false, loading: false, error: false }, () => {
+            if (revision === this.revision) void this.loadMore();
         });
-    }
-
-    initResource() {
-        store.setState('GLOBAL_LOADING', true);
-        queryTypes().then(
-            (res: any) => {
-                if (!res) {
-                    store.setState('GLOBAL_LOADING', false);
-                    return;
-                }
-                const types: Record<string, number> = {};
-                res.forEach((item: any) => {
-                    types[item.text] = item.id;
-                });
-                this.setState({
-                    types,
-                    selectedType: Object.keys(types)[0]
-                });
-                this.getRecommendLst();
-            },
-            reason => {
-                if (store.getState('GLOBAL_LOADING')) {
-                    store.setState('GLOBAL_LOADING', false);
-                }
-            }
-        );
-    }
-
-    private getRecommendLst() {
-        Promise.all([
-            queryResources(++this.page, this.state.types[this.state.selectedType]),
-            queryResources(++this.page, this.state.types[this.state.selectedType]),
-            queryResources(++this.page, this.state.types[this.state.selectedType])
-        ]).then(
-            reses => {
-                const allList: IplayResource[] = [];
-                reses.forEach(res => {
-                    if (!res) {
-                        this.pageCount = 0;
-                        return;
-                    }
-                    const { list, pagecount } = res;
-                    this.pageCount = pagecount;
-                    allList.push(...list);
-                });
-                if (store.getState('GLOBAL_LOADING')) {
-                    store.setState('GLOBAL_LOADING', false);
-                }
-                this.setState({
-                    recommendLoading: this.page < this.pageCount,
-                    cardsData: [...this.state.cardsData, ...allList]
-                });
-            },
-            reason => {
-                if (store.getState('GLOBAL_LOADING')) {
-                    store.setState('GLOBAL_LOADING', false);
-                }
-            }
-        );
-    }
-
-    private changeType(key: string, item: number) {
-        store.setState('GLOBAL_LOADING', true);
-        this.setState(
-            this.setState({
-                selectedType: key,
-                cardsData: [],
-                recommendLoading: false
-            }),
-            () => {
-                this.page = 0;
-                this.getRecommendLst();
-            }
-        );
     }
 
     renderClassify() {
@@ -122,7 +82,7 @@ export default class Classify extends React.Component<any, any> {
                     className={`${cssM.typeItem} ${
                         item === this.state.selectedType ? cssM.typeItemActive : ''
                     }`}
-                    onClick={() => this.changeType(item, this.state.types[item])}>
+                    onClick={() => this.changeType(item)}>
                     {item}
                 </span>
             );
@@ -140,16 +100,19 @@ export default class Classify extends React.Component<any, any> {
                     <InfiniteScroll
                         initialLoad={false}
                         pageStart={1}
-                        hasMore={this.state.recommendLoading}
-                        loadMore={this.getRecommendLst.bind(this)}
+                        hasMore={this.state.hasMore && !this.state.loading && !this.state.error}
+                        loadMore={this.loadMore}
                         useWindow={false}>
                         <TomatoxWaterfall data={this.state.cardsData} />
-                        {this.state.recommendLoading && (
+                        {this.state.error && (
+                            <Button onClick={this.state.selectedType ? this.loadMore : this.refresh}>视频源请求失败，点击重试</Button>
+                        )}
+                        {this.state.loading && (
                             <div style={{ height: 100, position: 'relative' }}>
                                 <Spin
                                     size={'large'}
                                     indicator={<CustomSpin />}
-                                    spinning={this.state.recommendLoading}
+                                    spinning={this.state.loading}
                                     />
                             </div>
                         )}

@@ -1,23 +1,29 @@
 import { TABLES } from '@/utils/constants';
 
+export function getMediaUrl(value: string) {
+    try {
+        const url = new URL(value);
+        if (['http:', 'https:'].includes(url.protocol) && !url.username && !url.password) return url;
+    } catch {
+        return;
+    }
+}
+
+export function plainDescription(value: unknown): string {
+    return typeof value === 'string' ? value.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim() : '';
+}
+
 export function filterResources(resources: any[]) {
-    return resources.map(res => filterResource(res));
+    return resources
+        .filter(item => item?.id != null && item?.name)
+        .map(filterResource)
+        .filter(item => item.playList.size > 0);
 }
 
 export function filterResource(resource: any): IplayResource {
-    let listStr = '';
-    if (resource.dl && resource.dl.dd) {
-        if (resource.dl.dd instanceof Array) {
-            const videoList = resource.dl.dd.filter(
-                (item: any) => item.flag && item.flag.includes('m3u8')
-            );
-            if (videoList.length) {
-                listStr = videoList[0].text;
-            }
-        } else {
-            listStr = resource.dl.dd.text;
-        }
-    }
+    const source = resource.dl?.dd;
+    const sources = Array.isArray(source) ? source : [source];
+
     return {
         id: resource.id,
         type: resource.type,
@@ -25,7 +31,7 @@ export function filterResource(resource: any): IplayResource {
         lang: resource.lang,
         name: resource.name,
         director: resource.director,
-        describe: resource.des,
+        describe: plainDescription(resource.des),
         area: resource.area,
         actor: resource.actor,
         class: '',
@@ -36,18 +42,24 @@ export function filterResource(resource: any): IplayResource {
         tag: '',
         year: resource.year,
         updateTime: resource.last,
-        playList: filterPlayList(listStr)
+        playList: sources
+            .map(item => filterPlayList(item?.text ?? item))
+            .find(list => list.size > 0) ?? new Map()
     };
 }
 
-function filterPlayList(listStr: string) {
+function filterPlayList(value: unknown) {
     const list = new Map<string, string>();
-    const splitLists = listStr.split('$$$').filter(val => val.includes('.m3u8'));
-    if (splitLists.length) {
-        splitLists[0].split('#').forEach(item => {
-            const [key, val] = item.split('$');
-            key && val && list.set(key, val);
-        });
+    if (typeof value !== 'string') return list;
+
+    for (const source of value.split('$$$')) {
+        for (const item of source.split('#')) {
+            const separator = item.indexOf('$');
+            const label = separator >= 0 ? item.slice(0, separator).trim() : '播放';
+            const url = getMediaUrl(item.slice(separator + 1).trim());
+            if (label && url && /\.(m3u8|mp4|webm)$/i.test(url.pathname)) list.set(label, url.href);
+        }
+        if (list.size) break;
     }
     return list;
 }

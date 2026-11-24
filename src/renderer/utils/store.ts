@@ -11,7 +11,6 @@ class Store {
             GLOBAL_LOADING: false, // 全局loading
             SEARCH_KEYWORDS: '', // 搜索关键字
             CURRENT_PATH: '', // 当前页面路径
-            GLOBAL_SEARCH_ENABLE: true, // 全局搜索按钮状态
             TOMATOX_THEME: getTheme()
         };
         this.subscribers = {};

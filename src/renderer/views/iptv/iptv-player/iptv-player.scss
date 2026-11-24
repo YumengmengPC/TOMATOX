@@ -7,6 +7,13 @@
     top: 0;
     overflow: hidden;
 }
+.playback-status {
+    position: absolute;
+    z-index: 1;
+    top: 42px;
+    left: 12px;
+    right: 12px;
+}
 
 .play-full-header {
     position: absolute;

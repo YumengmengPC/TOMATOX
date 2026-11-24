@@ -1,6 +1,21 @@
 declare module '*.svg';
 declare module '*.scss';
 
+declare interface Window {
+    tomatox: {
+        minimize(): void;
+        toggleMaximized(): void;
+        close(): void;
+        openDevTools(): void;
+        openProject(): void;
+        checkForUpdate(): void;
+        downloadUpdate(): void;
+        quitAndInstall(): void;
+        onUpdate(channel: string, callback: (data: any) => void): () => void;
+        readVideoSource(address: string): Promise<string>;
+    };
+}
+
 declare interface Iorigin {
     id: string;
     api: string;
@@ -8,7 +23,7 @@ declare interface Iorigin {
 }
 
 declare interface IplayResource {
-    id: string;
+    id: string | number;
     type: string;
     picture: string;
     lang: string;

@@ -2,7 +2,7 @@
 # TOMATOX
 
 ### A Online video player with TypeScript, React, and Electron.
-- 🎞 全网在线VIP视频解析
+- 🎞 内置 4K 60 帧公开短片，支持自定义 XML 视频源及 HLS、FLV 直播
 - 🎨 贯彻精致简洁的设计风格
 - 👑 PC全平台支持(Windows, Linux, MacOS)
 - ✨ 新功能陆续上线中...
@@ -28,28 +28,24 @@
 ![image](https://github.com/yanjiaxuan/TOMATOX/blob/main/docs/product/TOMATOX-9.png?raw=true)
 
 ## Install
-Clone the repository with Git:
+
+Requires Node.js 22.12 or later.
 
 ```bash
-git clone --depth=1 git@github.com:yanjiaxuan/TOMATOX.git <your-project-name>
-```
-
-Setting npm registry and electron mirror address
-
-```bash
-npm config set registry https://mirrors.huaweicloud.com/repository/npm/
-npm config set disturl https://mirrors.huaweicloud.com/nodejs/
-npm config set electron_mirror https://mirrors.huaweicloud.com/electron/
-```
-
-And then install the dependencies:
-
-```bash
-cd <your-project-name>
-npm install
+git clone https://github.com/YumengmengPC/TOMATOX.git
+cd TOMATOX
+npm ci --legacy-peer-deps
 ```
 
 ## Usage
+
+运行 `npm start` 构建并启动桌面应用。「推荐」中可播放 Pexels 的 4K 60 帧短片。内置短片在播放前会预缓冲，以减少播放中的停顿。
+
+- [秋日森林与风力发电机](https://www.pexels.com/video/aerial-view-of-wind-turbines-in-autumn-forest-40750145/) · Efrem Efre
+- [礁石海岸的浪花](https://www.pexels.com/video/the-ocean-is-rough-and-has-waves-19057686/) · Ahmed
+
+在「设置」中可添加自定义 XML 视频源。在「直播」中可输入支持跨域访问的 `.m3u8` 或 `.flv` 地址。
+
 Both processes have to be started **simultaneously** in different console tabs:
 
 ```bash
@@ -72,7 +68,7 @@ We use [Electron builder](https://www.electron.build/) to build and package the 
 npm run dist
 ```
 
-This will create a installer for your platform in the `releases` folder.
+This will create a installer for your platform in the `release` folder.
 
 You can make builds for specific platforms (or multiple platforms) by using the options found [here](https://www.electron.build/cli). E.g. building for all platforms (Windows, Mac, Linux):
 

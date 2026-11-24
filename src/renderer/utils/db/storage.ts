@@ -18,13 +18,19 @@ if (!enabledOrigin) {
 }
 
 const localConf = localStorage.getItem(configName);
-if (!localConf) {
-    localStorage.setItem(configName, JSON.stringify(playConfig));
+if (localConf) {
+    try {
+        const saved: IplayConfig = JSON.parse(localConf);
+        if (typeof saved?.voice === 'number' && saved.voice >= 0 && saved.voice <= 1) {
+            playConfig.voice = saved.voice;
+        }
+        if (typeof saved?.speed === 'number' && saved.speed > 0 && saved.speed <= 4) {
+            playConfig.speed = saved.speed;
+        }
+    } catch {
+        localStorage.removeItem(configName);
+    }
 }
-playConfig = {
-    ...playConfig,
-    ...JSON.parse(localStorage.getItem(configName)!)
-};
 
 export function getPlayConfig(): IplayConfig {
     return playConfig;

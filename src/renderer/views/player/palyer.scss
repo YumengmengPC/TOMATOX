@@ -56,6 +56,13 @@
     height: 100%;
     border: unset !important;
 }
+.playback-status {
+    position: absolute;
+    z-index: 1;
+    top: 12px;
+    left: 12px;
+    max-width: calc(100% - 380px);
+}
 .video-info-wrapper {
     min-width: 350px;
     width: 350px;

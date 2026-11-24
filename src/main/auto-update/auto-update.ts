@@ -1,70 +1,52 @@
-import { app, BrowserWindow, ipcMain, remote } from 'electron';
-import { autoUpdater } from 'electron-updater';
+import { app, BrowserWindow, IpcMainEvent, ipcMain } from 'electron';
+import { autoUpdater, ProgressInfo, UpdateInfo } from 'electron-updater';
+import { isAppSender } from '../event-handler/event-handler';
 
-const delDir = require('../utils/deleteDir');
-const path = require('path');
-
-// electron-updater 增量更新时似乎无法显示进度
-export function initUpdater(win: BrowserWindow) {
+export function initUpdater(window: BrowserWindow, isAppUrl: (url: string) => boolean) {
     autoUpdater.autoDownload = false;
     autoUpdater.autoInstallOnAppQuit = true;
 
-    // fix download error when old version update file already exists
-    function downloadUpdate() {
-        autoUpdater.downloadUpdate().catch(err => {
-            if (err.message && err.message.includes('file already exists') && err.path) {
-                delDir(err.path);
-                downloadUpdate();
-            } else {
-                win.webContents.send('update-error', err);
+    const send = (channel: string, data?: unknown) => {
+        if (!window.isDestroyed()) window.webContents.send(channel, data);
+    };
+    const reportError = () => send('update-error');
+    const commands = {
+        checkForUpdate: () => {
+            if (!app.isPackaged) {
+                send('update-not-available');
+                return;
             }
-        });
-    }
-
-    // 主进程监听检查更新事件
-    ipcMain.on('checkForUpdate', () => {
-        autoUpdater.checkForUpdates().catch(err => {
-            win.webContents.send('update-error', err);
-        });
+            void autoUpdater.checkForUpdates().catch(reportError);
+        },
+        downloadUpdate: () => void autoUpdater.downloadUpdate().catch(reportError),
+        quitAndInstall: () => autoUpdater.quitAndInstall()
+    };
+    const listeners = Object.entries(commands).map(([channel, command]) => {
+        const listener = (event: IpcMainEvent) => {
+            if (isAppSender(event, window, isAppUrl)) command();
+        };
+        ipcMain.on(channel, listener);
+        return { channel, listener };
     });
+    const checking = () => send('checking-for-update');
+    const available = ({ version }: UpdateInfo) => send('update-available', { version });
+    const notAvailable = () => send('update-not-available');
+    const downloaded = () => send('update-downloaded');
+    const downloadProgress = (info: ProgressInfo) => send('download-progress', info);
+    autoUpdater.on('checking-for-update', checking);
+    autoUpdater.on('update-available', available);
+    autoUpdater.on('update-not-available', notAvailable);
+    autoUpdater.on('error', reportError);
+    autoUpdater.on('download-progress', downloadProgress);
+    autoUpdater.on('update-downloaded', downloaded);
 
-    // 主进程监听开始下载事件
-    ipcMain.on('downloadUpdate', () => {
-        downloadUpdate();
-    });
-
-    // 主进程监听退出并安装事件
-    ipcMain.on('quitAndInstall', () => {
-        autoUpdater.quitAndInstall();
-    });
-
-    // 开始检测是否有更新
-    autoUpdater.on('checking-for-update', () => {
-        win.webContents.send('checking-for-update');
-    });
-
-    // 检测到有可用的更新
-    autoUpdater.on('update-available', info => {
-        win.webContents.send('update-available', info);
-    });
-
-    // 没有检测到有可用的更新
-    autoUpdater.on('update-not-available', () => {
-        win.webContents.send('update-not-available');
-    });
-
-    // 更新出错
-    autoUpdater.on('update-error', err => {
-        win.webContents.send('update-error', err);
-    });
-
-    // 下载更新进度
-    autoUpdater.on('download-progress', progressObj => {
-        win.webContents.send('download-progress', progressObj);
-    });
-
-    // 下载完成
-    autoUpdater.on('update-downloaded', () => {
-        win.webContents.send('update-downloaded');
-    });
+    return () => {
+        listeners.forEach(({ channel, listener }) => ipcMain.removeListener(channel, listener));
+        autoUpdater.removeListener('checking-for-update', checking);
+        autoUpdater.removeListener('update-available', available);
+        autoUpdater.removeListener('update-not-available', notAvailable);
+        autoUpdater.removeListener('error', reportError);
+        autoUpdater.removeListener('download-progress', downloadProgress);
+        autoUpdater.removeListener('update-downloaded', downloaded);
+    };
 }

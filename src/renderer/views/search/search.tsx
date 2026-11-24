@@ -1,113 +1,87 @@
-import React, { useState } from 'react';
+import React from 'react';
 import TomatoxWaterfall from '@/components/tomatox-waterfall/tomatox-waterfall';
 import store from '@/utils/store';
 import TOMATOX_ICON from '@/images/svg/icon.svg';
-import { queryResources, searchResources } from '@/utils/request/modules/queryResources';
-import { filterResources } from '@/utils/filterResources';
+import { queryResources } from '@/utils/request/modules/queryResources';
+import ResourcePager from '@/utils/request/resourcePager';
 import InfiniteScroll from 'react-infinite-scroller';
-import { Spin } from 'antd';
+import { Spin, Button } from 'antd';
 import CustomSpin from '@/components/custom-spin/custom-spin';
 import cssM from './search.scss';
-import { getEnabledOrigin } from '@/utils/db/storage';
 
-export default class Search extends React.Component<any, any> {
-    private page = 0;
-    private pageCount = 10;
-    constructor(props: any) {
-        super(props);
-        this.state = {
-            cardsData: [],
-            recommendLoading: false
-        };
+export default class Search extends React.Component<{}, { cardsData: IplayResource[]; hasMore: boolean; loading: boolean; error: boolean }> {
+    private pages = new ResourcePager();
+    private listeners: Array<() => void> = [];
+    private searchRevision = 0;
+    state = { cardsData: [] as IplayResource[], hasMore: false, loading: false, error: false };
+
+    componentDidMount() {
+        this.listeners = [
+            store.subscribe('SEARCH_KEYWORDS', this.refresh),
+            store.subscribe('SITE_ADDRESS', this.refresh)
+        ];
+        this.refresh();
     }
 
-    componentWillMount(): void {
-        store.subscribe('SEARCH_KEYWORDS', this.searchResByKW);
-        const kw = store.getState('SEARCH_KEYWORDS');
-        if (kw) {
-            this.searchResByKW();
-        }
+    componentWillUnmount() {
+        this.listeners.forEach(unsubscribe => unsubscribe());
+        this.pages.reset();
+        this.searchRevision++;
     }
 
-    componentWillUnmount(): void {
-        store.unSubscribe('SEARCH_KEYWORDS', this.searchResByKW);
-    }
-
-    searchResByKW = async () => {
-        this.page = 0;
-        this.pageCount = 10;
-        store.setState('GLOBAL_LOADING', true);
-        this.setState(
-            {
-                cardsData: [],
-                recommendLoading: false
-            },
-            () => {
-                this.searchWrapper();
+    private refresh = () => {
+        const revision = ++this.searchRevision;
+        this.pages.reset();
+        this.setState({ cardsData: [], hasMore: false, loading: false, error: false }, () => {
+            if (revision === this.searchRevision && store.getState('SEARCH_KEYWORDS')) {
+                void this.loadMore();
             }
-        );
+        });
     };
 
-    async searchWrapper() {
-        if (this.page >= this.pageCount) {
-            store.setState('GLOBAL_SEARCH_ENABLE', true);
-            store.setState('GLOBAL_LOADING', false);
-            this.setState({
-                recommendLoading: false
-            });
-            return;
-        }
-        Promise.all([this.search(), this.search(), this.search()]).finally(() => {
-            store.setState('GLOBAL_SEARCH_ENABLE', true);
-            if (store.getState('GLOBAL_LOADING')) {
-                this.setState({
-                    recommendLoading: this.page < this.pageCount
-                });
-                store.setState('GLOBAL_LOADING', false);
-            }
-        });
-    }
-
-    async search() {
+    private loadMore = async () => {
+        if (this.state.loading) return;
+        const revision = this.searchRevision;
         const keyword = store.getState('SEARCH_KEYWORDS');
-        if (!keyword) {
-            store.setState('GLOBAL_LOADING', false);
-            return;
+        const origin: Iorigin = store.getState('SITE_ADDRESS');
+        this.setState({ loading: true, error: false });
+        try {
+            const result = await this.pages.next(page => queryResources(page, undefined, keyword, undefined, origin));
+            if (result && revision === this.searchRevision) {
+                this.setState(state => ({ cardsData: [...state.cardsData, ...result.list], hasMore: result.hasMore }));
+            }
+        } catch {
+            if (revision === this.searchRevision) this.setState({ error: true });
+        } finally {
+            if (revision === this.searchRevision) {
+                this.setState({ loading: false });
+            }
         }
-        let res;
-        if (getEnabledOrigin() === '默认') {
-            res = await searchResources(++this.page, keyword);
-        } else {
-            res = await queryResources(++this.page, undefined, keyword);
-        }
-        if (!res) {
-            this.pageCount = 0;
-            return;
-        }
-        const { pagecount, list } = res;
-        this.pageCount = pagecount;
-        this.setState({
-            cardsData: [...this.state.cardsData, ...list]
-        });
-    }
+    };
 
     render(): React.ReactNode {
-        if (this.state.cardsData && this.state.cardsData.length) {
+        if (this.state.loading && !this.state.cardsData.length) {
+            return <Spin size="large" indicator={<CustomSpin />} />;
+        }
+        if (this.state.error) {
+            return <Button onClick={this.loadMore}>视频源请求失败，点击重试</Button>;
+        }
+        if (this.state.cardsData.length) {
             return (
                 <div className={cssM.scrollWrapper}>
                     <InfiniteScroll
                         initialLoad={false}
                         pageStart={1}
-                        loadMore={this.searchWrapper.bind(this)}
-                        hasMore
+                        loadMore={this.loadMore}
+                        hasMore={this.state.hasMore && !this.state.loading}
                         useWindow={false}>
                         <TomatoxWaterfall data={this.state.cardsData} />
-                        {this.state.recommendLoading && (
+                        {this.state.loading && (
                             <div style={{ height: 100, position: 'relative' }}>
                                 <Spin
                                     size={'large'}
                                     indicator={<CustomSpin />}
-                                    spinning={this.state.recommendLoading}
+                                    spinning={this.state.loading}
                                     />
                             </div>
                         )}

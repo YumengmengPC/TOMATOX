@@ -1,81 +1,54 @@
-import React, { useEffect, useState } from 'react';
+import ResourcePager from '@/utils/request/resourcePager';
+import React from 'react';
 import { Button, Spin } from 'antd';
 import store from '@/utils/store';
 import InfiniteScroll from 'react-infinite-scroller';
 import CustomSpin from '@/components/custom-spin/custom-spin';
 import TomatoxWaterfall from '@/components/tomatox-waterfall/tomatox-waterfall';
-import { filterResources } from '@/utils/filterResources';
 import { queryResources } from '@/utils/request/modules/queryResources';
 import cssM from './recommend.scss';
 
-export default class Recommend extends React.Component<any, any> {
-    private page = 0;
-    private pageCount = 10;
-    private type = undefined;
+export default class Recommend extends React.Component<{}, { cardsData: IplayResource[]; hasMore: boolean; loading: boolean; error: boolean }> {
+    private pages = new ResourcePager();
+    private unsubscribe?: () => void;
+    private revision = 0;
+    state = { cardsData: [] as IplayResource[], hasMore: false, loading: false, error: false };
 
-    constructor(props: any) {
-        super(props);
-        this.state = {
-            cardsData: [],
-            recommendLoading: false
-        };
+    componentDidMount() {
+        this.unsubscribe = store.subscribe('SITE_ADDRESS', this.refresh);
+        this.refresh();
     }
 
-    componentWillMount(): void {
-        store.setState('GLOBAL_LOADING', true);
-        this.initResource();
-        store.subscribe('SITE_ADDRESS', () => {
-            this.page = 0;
-            this.pageCount = 10;
-            this.setState(
-                {
-                    cardsData: [],
-                    recommendLoading: false
-                },
-                this.initResource
-            );
+    componentWillUnmount() {
+        this.unsubscribe?.();
+        this.pages.reset();
+        this.revision++;
+    }
+
+    private refresh = () => {
+        const revision = ++this.revision;
+        this.pages.reset();
+        this.setState({ cardsData: [], hasMore: false, loading: false, error: false }, () => {
+            if (revision === this.revision) void this.loadMore();
         });
-    }
+    };
 
-    initResource() {
-        this.getRecommendLst();
-    }
-
-    getRecommendLst() {
-        if (this.page >= this.pageCount) {
-            return;
-        }
-        Promise.all([
-            queryResources(++this.page, this.type, undefined, 24 * 30),
-            queryResources(++this.page, this.type, undefined, 24 * 30),
-            queryResources(++this.page, this.type, undefined, 24 * 30)
-        ]).then(
-            resLst => {
-                const collectRes: IplayResource[] = [];
-                resLst.forEach(res => {
-                    if (!res) {
-                        this.pageCount = 0;
-                        return;
-                    }
-                    const { list, pagecount } = res;
-                    this.pageCount = pagecount;
-                    collectRes.push(...list);
-                });
-                if (store.getState('GLOBAL_LOADING')) {
-                    store.setState('GLOBAL_LOADING', false);
-                }
-                this.setState({
-                    recommendLoading: this.page < this.pageCount,
-                    cardsData: [...this.state.cardsData, ...collectRes]
-                });
-            },
-            reason => {
-                if (store.getState('GLOBAL_LOADING')) {
-                    store.setState('GLOBAL_LOADING', false);
-                }
+    private loadMore = async () => {
+        if (this.state.loading) return;
+        const revision = this.revision;
+        const origin: Iorigin = store.getState('SITE_ADDRESS');
+        this.setState({ loading: true, error: false });
+        try {
+            const result = await this.pages.next(page => queryResources(page, undefined, undefined, 24 * 30, origin));
+            if (result && revision === this.revision) {
+                this.setState(state => ({ cardsData: [...state.cardsData, ...result.list], hasMore: result.hasMore }));
             }
-        );
-    }
+        } catch {
+            if (revision === this.revision) this.setState({ error: true });
+        } finally {
+            if (revision === this.revision) this.setState({ loading: false });
+        }
+    };
 
     render(): React.ReactNode {
         return (
@@ -83,15 +56,16 @@ export default class Recommend extends React.Component<any, any> {
                 <InfiniteScroll
                     initialLoad={false}
                     pageStart={1}
-                    loadMore={this.getRecommendLst.bind(this)}
-                    hasMore={this.page < this.pageCount}
+                    loadMore={this.loadMore}
+                    hasMore={this.state.hasMore && !this.state.loading && !this.state.error}
                     useWindow={false}>
                     <TomatoxWaterfall data={this.state.cardsData} />
+                    {this.state.error && <Button onClick={this.loadMore}>视频源请求失败，点击重试</Button>}
                     <div style={{ height: 100, position: 'relative' }}>
                         <Spin
                             size={'large'}
                             indicator={<CustomSpin />}
-                            spinning={this.state.recommendLoading}
+                            spinning={this.state.loading}
                             />
                     </div>
                 </InfiniteScroll>

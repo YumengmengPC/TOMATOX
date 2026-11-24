@@ -1,9 +1,10 @@
 import React from 'react';
-import { Input, Radio, Row, Space, Col, Button, message, Checkbox } from 'antd';
+import { Input, Row, Col, Button, message, Checkbox } from 'antd';
 import cssM from './setting.scss';
 import { getEnabledOrigin, setEnabledOrigin } from '@/utils/db/storage';
 import Indexed from '@/utils/db/indexed';
-import { TABLES } from '@/utils/constants';
+import { DEFAULT_ORIGIN, TABLES } from '@/utils/constants';
+import { getMediaUrl } from '@/utils/filterResources';
 import store from '@/utils/store';
 
 export default class Setting extends React.Component<any, any> {
@@ -11,18 +12,21 @@ export default class Setting extends React.Component<any, any> {
         super(props);
         this.state = {
             enableOrigin: getEnabledOrigin(),
-            selectableOrigins: []
+            selectableOrigins: [],
+            originName: '',
+            originAddress: '',
+            saving: false
         };
     }
 
-    componentWillMount(): void {
+    componentDidMount(): void {
         Indexed.instance!.queryAll(TABLES.TABLE_ORIGIN).then(res => {
             const result = res as Iorigin[];
             result.sort((a, b) => a.addTime - b.addTime);
             this.setState({
                 selectableOrigins: result
             });
-        });
+        }).catch(() => message.error('读取视频源失败'));
     }
 
     private onChange = (e: Iorigin) => {
@@ -37,32 +41,47 @@ export default class Setting extends React.Component<any, any> {
         message.success('切换成功');
     };
 
-    private deleteOrigin = (id: string) => {
-        this.setState({
-            selectableOrigins: this.state.selectableOrigins.filter(
-                (item: Iorigin) => item.id !== id
-            )
-        });
-        Indexed.instance!.deleteById(TABLES.TABLE_ORIGIN, id);
+    private deleteOrigin = async (id: string) => {
+        if (id === this.state.enableOrigin || id === DEFAULT_ORIGIN.id) return;
+        try {
+            await Indexed.instance!.deleteById(TABLES.TABLE_ORIGIN, id);
+            this.setState(({ selectableOrigins }: { selectableOrigins: Iorigin[] }) => ({
+                selectableOrigins: selectableOrigins.filter(item => item.id !== id)
+            }));
+        } catch {
+            message.error('删除视频源失败');
+        }
     };
 
-    private addOrigin = () => {
-        const name = (this.refs.oriNameInput as Input).state.value.trim();
-        const addr = (this.refs.oriAddrInput as Input).state.value.trim();
-        if (this.state.selectableOrigins.filter((item: Iorigin) => item.id === name).length) {
+    private addOrigin = async () => {
+        if (this.state.saving) return;
+        const name = this.state.originName.trim();
+        const url = getMediaUrl(this.state.originAddress.trim());
+        if (name === DEFAULT_ORIGIN.id || this.state.selectableOrigins.some((item: Iorigin) => item.id === name)) {
             message.warn('名称已存在');
-        } else if (!name || !/^[a-zA-Z0-9\u4e00-\u9fa5]+$/.test(name)) {
-            message.warn('名称不能为空且只能输入大小写字母和数字');
-        } else if (!addr || !/http(s)?:\/\/([\w-]+\.)+[\w-]+(\/[\w- ./?%&=]*)?/.test(addr)) {
-            message.warn('地址不合法');
-        } else {
-            const newOri: Iorigin = { id: name, api: addr, addTime: Date.now() };
-            Indexed.instance!.insertOrUpdateOrigin(TABLES.TABLE_ORIGIN, newOri);
-            this.setState({
-                selectableOrigins: [...this.state.selectableOrigins, newOri]
-            });
-            (this.refs.oriNameInput as Input).setValue('');
-            (this.refs.oriAddrInput as Input).setValue('');
+            return;
+        }
+        if (!name || !/^[a-zA-Z0-9\u4e00-\u9fa5]+$/.test(name)) {
+            message.warn('名称只能包含中文、字母和数字');
+            return;
+        }
+        if (!url) {
+            message.warn('请输入完整的 HTTP 或 HTTPS 地址');
+            return;
+        }
+        const source: Iorigin = { id: name, api: url.href, addTime: Date.now() };
+        this.setState({ saving: true });
+        try {
+            await Indexed.instance!.insertOrUpdateOrigin(TABLES.TABLE_ORIGIN, source);
+            this.setState(({ selectableOrigins }: { selectableOrigins: Iorigin[] }) => ({
+                selectableOrigins: [...selectableOrigins, source],
+                originName: '',
+                originAddress: ''
+            }));
+        } catch {
+            message.error('保存视频源失败');
+        } finally {
+            this.setState({ saving: false });
         }
     };
 
@@ -84,14 +103,16 @@ export default class Setting extends React.Component<any, any> {
                                     名称：{item.id}
                                 </Col>
                                 <Col span={16} className={cssM.originItem}>
-                                    地址：{item.api}
+                                    {item.id === DEFAULT_ORIGIN.id ? '内置高清片库' : '地址：' + item.api}
                                 </Col>
-                                {item.id !== '默认' && this.state.enableOrigin !== item.id && (
+                                {item.id !== DEFAULT_ORIGIN.id && this.state.enableOrigin !== item.id && (
                                     <Col span={2}>
                                         <span
                                             className={cssM.originBtn}
-                                            onClick={() => {
-                                                this.deleteOrigin(item.id);
+                                            onClick={event => {
+                                                event.preventDefault();
+                                                event.stopPropagation();
+                                                void this.deleteOrigin(item.id);
                                             }}>
                                             删除
                                         </span>
@@ -105,13 +126,15 @@ export default class Setting extends React.Component<any, any> {
                 <div className={[cssM.settingContent, 'theme-input'].join(' ')}>
                     <Row gutter={30}>
                         <Col span={6}>
-                            <Input ref={'oriNameInput'} addonBefore={'名称'} />
+                            <Input addonBefore="名称" value={this.state.originName}
+                                onChange={event => this.setState({ originName: event.target.value })} />
                         </Col>
                         <Col span={13}>
-                            <Input ref={'oriAddrInput'} addonBefore={'地址'} />
+                            <Input addonBefore="地址" value={this.state.originAddress}
+                                onChange={event => this.setState({ originAddress: event.target.value })} />
                         </Col>
                         <Col span={4}>
-                            <Button onClick={this.addOrigin}>添加</Button>
+                            <Button loading={this.state.saving} onClick={this.addOrigin}>添加</Button>
                         </Col>
                     </Row>
                 </div>

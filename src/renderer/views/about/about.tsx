@@ -8,12 +8,9 @@ import {
     ArrowUpOutlined,
     CloseCircleOutlined
 } from '@ant-design/icons';
-import { ipcRenderer } from 'electron';
 import { PROD_STATEMENT } from '@/utils/constants';
 
-const openBrowser = require('@/utils/openBrowser');
 const { version } = require('@/../../package.json');
-const path = require('path');
 
 export default class About extends React.Component<any, any> {
     constructor(props: any) {
@@ -29,44 +26,32 @@ export default class About extends React.Component<any, any> {
         };
     }
 
-    componentWillMount(): void {
-        ipcRenderer
-            .on('checking-for-update', () => {
-                this.setState({
-                    updateStatus: 1
-                });
-            })
-            .on('update-available', (event: any, info: any) => {
-                this.setState({
-                    updateStatus: 3,
-                    newVersion: info.version
-                    // note: info.releaseNotes
-                });
-            })
-            .on('update-not-available', () => {
-                this.setState({
-                    updateStatus: 2
-                });
-            })
-            .on('update-error', () => {
-                this.setState({
-                    updateStatus: 5
-                });
-            })
-            .on('update-downloaded', () => {
-                this.setState({
-                    updateStatus: 4
-                });
-            })
-            .on('download-progress', (event: any, procInfo: any) => {
+    private updateListeners: Array<() => void> = [];
+
+    componentDidMount(): void {
+        const onUpdate = window.tomatox.onUpdate;
+        this.updateListeners = [
+            onUpdate('checking-for-update', () => this.setState({ updateStatus: 1 })),
+            onUpdate('update-available', info => {
+                this.setState({ updateStatus: 3, newVersion: info.version });
+            }),
+            onUpdate('update-not-available', () => this.setState({ updateStatus: 2 })),
+            onUpdate('update-error', () => this.setState({ updateStatus: 5 })),
+            onUpdate('update-downloaded', () => this.setState({ updateStatus: 4 })),
+            onUpdate('download-progress', info => {
                 this.setState({
                     updateStatus: 6,
-                    percent: Math.floor(procInfo.percent || 0),
-                    bytesPerSecond: this.convertBytes(procInfo.bytesPerSecond || 0),
-                    transferred: this.convertBytes(procInfo.transferred || 0),
-                    total: this.convertBytes(procInfo.total || 0)
+                    percent: Math.floor(info.percent || 0),
+                    bytesPerSecond: this.convertBytes(info.bytesPerSecond || 0),
+                    transferred: this.convertBytes(info.transferred || 0),
+                    total: this.convertBytes(info.total || 0)
                 });
-            });
+            })
+        ];
+    }
+
+    componentWillUnmount(): void {
+        this.updateListeners.forEach(unsubscribe => unsubscribe());
     }
 
     private convertBytes(bytes: number) {
@@ -83,18 +68,18 @@ export default class About extends React.Component<any, any> {
         this.setState({
             updateStatus: 1
         });
-        ipcRenderer.send('checkForUpdate');
+        window.tomatox.checkForUpdate();
     };
 
     private downloadNew = () => {
         this.setState({
             updateStatus: 7
         });
-        ipcRenderer.send('downloadUpdate');
+        window.tomatox.downloadUpdate();
     };
 
     private installNew = () => {
-        ipcRenderer.send('quitAndInstall');
+        window.tomatox.quitAndInstall();
     };
 
     render(): React.ReactNode {
@@ -161,7 +146,7 @@ export default class About extends React.Component<any, any> {
                         <GithubOutlined
                             className={cssM.ghIcon}
                             onClick={() => {
-                                openBrowser('https://github.com/yanjiaxuan/TOMATOX');
+                                window.tomatox.openProject();
                             }}
                             />
                     </span>

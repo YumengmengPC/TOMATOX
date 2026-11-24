@@ -8,43 +8,55 @@ import {
     HeartFilled
 } from '@ant-design/icons';
 import { Control } from 'react-keeper';
-import { Tag, Tabs } from 'antd';
+import { Alert, Button, message, Tag, Tabs } from 'antd';
 
 import XGPlayer from 'xgplayer';
-import shortcutManager from 'electron-localshortcut';
 import Indexed from '@/utils/db/indexed';
 import { TABLES } from '@/utils/constants';
 import cssM from './palyer.scss';
 import { getPlayConfig, setPlayConfig } from '@/utils/db/storage';
+import { getMediaUrl, plainDescription } from '@/utils/filterResources';
+import { isCatalogVideo } from '@/utils/catalog';
 
 const HlsPlayer = require('xgplayer-hls.js');
-const { ipcRenderer, remote } = require('electron');
+
+async function bufferClip(url: string, signal: AbortSignal, report: (percent: number) => void) {
+    const limit = 64 * 1024 * 1024;
+    const response = await fetch(url, { signal, credentials: 'omit' });
+    const length = Number(response.headers.get('Content-Length'));
+    if (!response.ok || !response.body || length > limit) throw new Error('无法预缓冲高清影片');
+
+    const reader = response.body.getReader();
+    const chunks: Uint8Array<ArrayBuffer>[] = [];
+    let received = 0;
+    let reported = 0;
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        received += value.byteLength;
+        if (received > limit) {
+            await reader.cancel();
+            throw new Error('高清影片超过预缓冲上限');
+        }
+        chunks.push(value);
+        const percent = length > 0 ? Math.min(99, Math.floor(received / length * 100)) : 0;
+        if (percent !== reported) {
+            reported = percent;
+            report(percent);
+        }
+    }
+    return new Blob(chunks, { type: 'video/mp4' });
+}
 
 export default class Player extends React.Component<any, any> {
     private xgPlayer: XGPlayer | undefined;
     private sourceList: Map<string, Map<string, string>> = new Map();
     private selectedKey = '播放列表';
-    private controlState: IplayResource;
-    private mainEventHandler: Record<string, () => void> = {
-        Up: () => {
-            this.xgPlayer!.volume = Math.min(this.xgPlayer!.volume + 0.1, 1);
-        },
-        Down: () => {
-            this.xgPlayer!.volume = Math.max(this.xgPlayer!.volume - 0.1, 0);
-        },
-        Right: () => {
-            this.xgPlayer!.currentTime = Math.min(
-                this.xgPlayer!.currentTime + 10,
-                this.xgPlayer!.duration
-            );
-        },
-        Left: () => {
-            this.xgPlayer!.currentTime = Math.max(this.xgPlayer!.currentTime - 10, 0);
-        },
-        Space: () => {
-            this.xgPlayer!.paused ? this.xgPlayer!.play() : this.xgPlayer!.pause();
-        }
-    };
+    private controlState: IplayResource | undefined;
+    private playWrapper = React.createRef<HTMLDivElement>();
+    private bufferRequest?: AbortController;
+    private objectUrl?: string;
+    state = { curPlaySrc: '', curPlayDrama: '', isCollect: false, error: false, buffering: -1 };
 
     constructor(props: any) {
         super(props);
@@ -54,11 +66,13 @@ export default class Player extends React.Component<any, any> {
             this.state = {
                 curPlaySrc:
                     this.controlState.historyOption?.lastPlaySrc ||
-                    this.controlState.playList.values().next().value,
+                    this.controlState.playList.values().next().value || '',
                 curPlayDrama:
                     this.controlState.historyOption?.lastPlayDrama ||
-                    this.controlState.playList.keys().next().value,
-                isCollect: Indexed.collectedRes.has(this.controlState.id)
+                    this.controlState.playList.keys().next().value || '',
+                isCollect: Indexed.collectedRes.has(this.controlState.id),
+                error: false,
+                buffering: -1
             };
         }
     }
@@ -69,44 +83,92 @@ export default class Player extends React.Component<any, any> {
         if (curIdx >= 0 && curIdx < dramas.length - 1) {
             const drama = dramas[curIdx + 1];
             const src = this.sourceList.get(this.selectedKey)!.get(dramas[curIdx + 1])!;
-            this.setState({
-                curPlayDrama: drama,
-                curPlaySrc: src
-            });
-            this.xgPlayer!.src = src;
+            this.playDrama(drama, src);
         }
     };
 
-    doCollect() {
-        this.setState({
-            isCollect: true
-        });
-        Indexed.instance!.doCollect(this.controlState);
+    async doCollect() {
+        if (!this.controlState) return;
+        try {
+            await Indexed.instance!.doCollect(this.controlState);
+            this.setState({ isCollect: true });
+        } catch {
+            message.error('收藏保存失败');
+        }
     }
 
-    cancelCollect() {
-        this.setState({
-            isCollect: false
-        });
-        Indexed.instance!.cancelCollect(this.controlState.id);
+    async cancelCollect() {
+        if (!this.controlState) return;
+        try {
+            await Indexed.instance!.cancelCollect(this.controlState.id);
+            this.setState({ isCollect: false });
+        } catch {
+            message.error('取消收藏失败');
+        }
     }
 
     componentDidMount(): void {
-        this.xgPlayer = new HlsPlayer({
-            el: this.refs.playWrapperRef as any,
-            url: this.state.curPlaySrc,
+        void this.startPlayback(this.state.curPlaySrc, this.controlState?.historyOption?.lastPlayTime || 0);
+    }
+
+    private playDrama(drama: string, url: string) {
+        this.setState({ curPlayDrama: drama, curPlaySrc: url });
+        void this.startPlayback(url, 0);
+    }
+
+    private stopPlayback() {
+        this.bufferRequest?.abort();
+        this.bufferRequest = undefined;
+        this.xgPlayer?.pause();
+        this.xgPlayer?.destroy();
+        this.xgPlayer = undefined;
+        if (this.objectUrl) URL.revokeObjectURL(this.objectUrl);
+        this.objectUrl = undefined;
+    }
+
+    private async startPlayback(src: string, startAt: number) {
+        this.stopPlayback();
+        const url = getMediaUrl(src);
+        if (!url) {
+            this.setState({ error: true });
+            return;
+        }
+        let playAddress = url.href;
+        if (isCatalogVideo(playAddress)) {
+            const controller = new AbortController();
+            this.bufferRequest = controller;
+            this.setState({ buffering: 0, error: false });
+            try {
+                const clip = await bufferClip(playAddress, controller.signal, percent => {
+                    if (!controller.signal.aborted) this.setState({ buffering: percent });
+                });
+                if (controller.signal.aborted) return;
+                this.objectUrl = URL.createObjectURL(clip);
+                playAddress = this.objectUrl;
+            } catch {
+                if (controller.signal.aborted) return;
+            }
+        }
+        if (!this.playWrapper.current) return;
+        this.setState({ error: false, buffering: -1 });
+        const PlayerClass = /\.m3u8$/i.test(url.pathname) ? HlsPlayer : XGPlayer;
+        const config = getPlayConfig();
+        this.xgPlayer = new PlayerClass({
+            el: this.playWrapper.current,
+            url: playAddress,
             id: 'tomatox',
             lang: 'zh-cn',
             width: '100%',
             height: '100%',
             autoplay: false,
             videoInit: true,
-            screenShot: true,
-            keyShortcut: 'off',
-            crossOrigin: true,
+            screenShot: false,
+            preload: 'auto',
+            keyShortcut: 'on',
+            keyShortcutStep: { currentTime: 10, volume: 0.1 },
             cssFullscreen: true,
-            volume: getPlayConfig().voice,
-            defaultPlaybackRate: getPlayConfig().speed,
+            volume: config.voice,
+            defaultPlaybackRate: config.speed,
             playbackRate: [0.5, 1, 1.25, 1.5, 2],
             playPrev: true,
             playNextOne: true,
@@ -117,17 +179,21 @@ export default class Player extends React.Component<any, any> {
             videoTitle: true,
             airplay: true,
             closeVideoTouch: true,
-            ignores: ['replay', 'error'], // 为了切换播放器类型时避免显示错误刷新，暂时忽略错误
-            preloadTime: 300
+            ignores: ['replay'],
+            preloadTime: 20
         });
-        this.xgPlayer!.currentTime = this.controlState.historyOption?.lastPlayTime || 0;
+        if (startAt > 0) {
+            this.xgPlayer?.once('loadedmetadata', () => {
+                if (this.xgPlayer && startAt < this.xgPlayer.duration - 0.5) {
+                    this.xgPlayer.currentTime = startAt;
+                }
+            });
+        }
+        this.xgPlayer?.on('error', () => this.setState({ error: true }));
         this.xgPlayer?.play();
         this.xgPlayer?.on('ended', this.playNext);
         this.xgPlayer?.on('volumechange', this.updateVolumeConf);
         this.xgPlayer?.on('playbackrateChange', this.updateSpeedConf);
-        for (const key in this.mainEventHandler) {
-            shortcutManager.register(remote.getCurrentWindow(), key, this.mainEventHandler[key]);
-        }
     }
 
     private updateVolumeConf = () => {
@@ -147,6 +213,10 @@ export default class Player extends React.Component<any, any> {
     }
 
     componentWillUnmount(): void {
+        if (!this.controlState || !this.xgPlayer) {
+            this.stopPlayback();
+            return;
+        }
         const newData: IplayResource = {
             ...this.controlState,
             historyOption: {
@@ -159,14 +229,9 @@ export default class Player extends React.Component<any, any> {
                 )}`
             }
         };
-        Indexed.instance!.insertOrUpdateResource(TABLES.TABLE_HISTORY, newData);
+        void Indexed.instance!.insertOrUpdateResource(TABLES.TABLE_HISTORY, newData).catch(console.error);
 
-        shortcutManager.unregister(remote.getCurrentWindow(), Object.keys(this.mainEventHandler));
-        this.xgPlayer!.src = '';
-        this.xgPlayer?.off('ended', this.playNext);
-        this.xgPlayer?.off('volumechange', this.updateVolumeConf);
-        this.xgPlayer?.off('playbackrateChange', this.updateSpeedConf);
-        this.xgPlayer?.destroy();
+        this.stopPlayback();
     }
 
     descSources() {
@@ -193,14 +258,8 @@ export default class Player extends React.Component<any, any> {
                         playList.get(key) === this.state.curPlaySrc ? cssM.seriesTagActive : ''
                     }`}
                     onClick={() => {
-                        if (this.state.curPlaySrc !== playList.get(key)) {
-                            this.setState({
-                                curPlaySrc: playList.get(key),
-                                curPlayDrama: key
-                            });
-                            this.xgPlayer!.currentTime = 0;
-                            this.xgPlayer!.src = playList.get(key)!;
-                        }
+                        const src = playList.get(key);
+                        if (src && this.state.curPlaySrc !== src) this.playDrama(key, src);
                     }}>
                     {key}
                 </span>
@@ -210,6 +269,7 @@ export default class Player extends React.Component<any, any> {
     }
 
     render(): React.ReactNode {
+        if (!this.controlState) return <Alert type="info" message="请从影片列表选择一个视频" />;
         return (
             <div className={cssM.playPageWrapper}>
                 <div className={[cssM.playFullHeader, 'theme-header'].join(' ')}>
@@ -236,23 +296,32 @@ export default class Player extends React.Component<any, any> {
                     <span>
                         <MinusOutlined
                             onClick={() => {
-                                ipcRenderer.send('WINDOW_MIN');
+                                window.tomatox.minimize();
                             }}
                             />
                         <BlockOutlined
                             onClick={() => {
-                                ipcRenderer.send('WINDOW_MAX');
+                                window.tomatox.toggleMaximized();
                             }}
                             />
                         <CloseOutlined
                             onClick={() => {
-                                ipcRenderer.send('WINDOW_CLOSE');
+                                window.tomatox.close();
                             }}
                             />
                     </span>
                 </div>
                 <div className={cssM.playFullWrapper}>
-                    <div ref={'playWrapperRef'} className={cssM.playerWrapper} />
+                    <div ref={this.playWrapper} className={cssM.playerWrapper} />
+                    {this.state.buffering >= 0 && (
+                        <Alert className={cssM.playbackStatus} type="info" showIcon
+                            message={`正在缓冲 4K 视频 · ${this.state.buffering}%`} />
+                    )}
+                    {this.state.error && (
+                        <Alert className={cssM.playbackStatus} type="error" showIcon message="视频暂时无法播放"
+                            action={<Button onClick={() => this.startPlayback(this.state.curPlaySrc, 0)}>重试</Button>} />
+                    )}
+
                     <div className={[cssM.videoInfoWrapper, 'theme-content'].join(' ')}>
                         <Tabs
                             defaultActiveKey={'播放列表'}
@@ -311,12 +380,9 @@ export default class Player extends React.Component<any, any> {
                                         更新时间：{this.controlState?.updateTime}
                                     </div>
                                     <div className={cssM.detailDescTitle}>简介</div>
-                                    <div
-                                        className={cssM.detailDesc}
-                                        dangerouslySetInnerHTML={{
-                                            __html: this.controlState?.describe
-                                        }}
-                                        />
+                                    <div className={cssM.detailDesc}>
+                                        {plainDescription(this.controlState?.describe)}
+                                    </div>
                                 </div>
                             </Tabs.TabPane>
                         </Tabs>

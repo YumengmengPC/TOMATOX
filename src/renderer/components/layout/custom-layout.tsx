@@ -1,4 +1,4 @@
-import { Layout } from 'antd';
+import { Alert, Button, Layout } from 'antd';
 import React, { useEffect, useState } from 'react';
 import { HashRouter } from 'react-keeper';
 import Indexed from '@/utils/db/indexed';
@@ -6,24 +6,33 @@ import cssM from './custom-layout.scss';
 import CustomSider from './sider/custom-sider';
 import CustomHeader from './header/custom-header';
 import CustomContent from './content/custom-content';
-import { TABLES } from '@/utils/constants';
-import { getEnabledOrigin, getTheme } from '@/utils/db/storage';
+import { DEFAULT_ORIGIN, TABLES } from '@/utils/constants';
+import { getEnabledOrigin, getTheme, setEnabledOrigin } from '@/utils/db/storage';
 import store from '@/utils/store';
-import GlobalLoading from '../global-loading/global-loading';
 
 const { Header, Sider, Content } = Layout;
 
 export default function CustomLayout() {
     const [loaded, setLoaded] = useState(false);
-    if (!loaded) {
-        Indexed.init().then(async () => {
-            const origin = await Indexed.instance!.queryById(
-                TABLES.TABLE_ORIGIN,
-                getEnabledOrigin()
-            );
-            store.setState('SITE_ADDRESS', origin);
+    const [failed, setFailed] = useState(false);
+    const [attempt, setAttempt] = useState(0);
+    useEffect(() => {
+        let active = true;
+        Indexed.init().then(async db => {
+            const selected = await db.queryById(TABLES.TABLE_ORIGIN, getEnabledOrigin()) as Iorigin | undefined;
+            if (!active) return;
+            if (!selected) setEnabledOrigin(DEFAULT_ORIGIN.id);
+            store.setState('SITE_ADDRESS', selected ?? DEFAULT_ORIGIN);
             setLoaded(true);
+        }).catch(() => {
+            if (active) setFailed(true);
         });
+        return () => { active = false; };
+    }, [attempt]);
+    if (failed) {
+        return <Alert type="error" message="本地视频库加载失败" action={
+            <Button onClick={() => { setFailed(false); setAttempt(attempt + 1); }}>重试</Button>
+        } />;
     }
     return (
         <>
