@@ -1,4 +1,4 @@
-import { indexedDB, IDBKeyRange } from 'fake-indexeddb';
+import { IDBFactory, indexedDB, IDBKeyRange } from 'fake-indexeddb';
 import { catalog } from '@/utils/catalog';
 import { DEFAULT_ORIGIN, TABLES } from '@/utils/constants';
 import Indexed from '@/utils/db/indexed';
@@ -40,4 +40,42 @@ test('upgrading an existing database preserves its sources and removes expired h
     expect(history.map(item => item.id)).toEqual([recent.id]);
     expect(history[0].historyOption).toEqual(recent.historyOption);
     expect(Indexed.collectedRes.has(recent.id)).toBe(true);
+});
+
+test('2.0.3 history and its playlist can still be loaded and updated', async () => {
+    const indexedDB = new IDBFactory();
+    Object.assign(globalThis, { window: { indexedDB }, IDBKeyRange });
+    const [lastPlayDrama, lastPlaySrc] = Array.from(catalog[0].playList)[0];
+    const saved: IplayResource = {
+        ...catalog[0],
+        historyOption: { lastPlayDrama, lastPlaySrc, lastPlayTime: 19, lastPlayDate: Date.now() }
+    };
+    await new Promise<void>((resolve, reject) => {
+        const request = indexedDB.open('TOMATOX', 6);
+        request.onupgradeneeded = () => {
+            const db = request.result;
+            const history = db.createObjectStore(TABLES.TABLE_HISTORY, { keyPath: 'id' });
+            history.createIndex('lastPlayDate', 'historyOption.lastPlayDate');
+            history.put(saved);
+            db.createObjectStore(TABLES.TABLE_COLLECT, { keyPath: 'id' });
+            db.createObjectStore(TABLES.TABLE_ORIGIN, { keyPath: 'id' });
+        };
+        request.onsuccess = () => {
+            request.result.close();
+            resolve();
+        };
+        request.onerror = () => reject(request.error);
+    });
+
+    let dbModule!: typeof Indexed;
+    jest.isolateModules(() => { dbModule = require('@/utils/db/indexed').default; });
+    const db = await dbModule.init();
+    const record = await db.queryById(TABLES.TABLE_HISTORY, saved.id) as IplayResource;
+    expect(record.historyOption).toEqual(saved.historyOption);
+    expect(Array.from(record.playList)).toEqual([[lastPlayDrama, lastPlaySrc]]);
+    const historyOption = { ...record.historyOption, lastPlayTime: 31 };
+    await db.insertOrUpdateResource(TABLES.TABLE_HISTORY, { ...record, historyOption });
+    const updated = await db.queryById(TABLES.TABLE_HISTORY, saved.id) as IplayResource;
+    expect(updated.historyOption).toEqual(historyOption);
+    expect(Array.from(updated.playList)).toEqual([[lastPlayDrama, lastPlaySrc]]);
 });

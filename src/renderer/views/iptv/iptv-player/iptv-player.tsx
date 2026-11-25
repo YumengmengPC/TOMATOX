@@ -1,87 +1,135 @@
 import React from 'react';
 import cssM from './iptv-player.scss';
 import { Control } from 'react-keeper';
-import { Alert } from 'antd';
+import { Alert, Button } from 'antd';
 import {
     LeftOutlined,
     MinusOutlined,
     BlockOutlined,
-    CloseOutlined,
-    HeartOutlined,
-    HeartFilled
+    CloseOutlined
 } from '@ant-design/icons';
 import { getPlayConfig, setPlayConfig } from '@/utils/db/storage';
-import XGPlayer from 'xgplayer';
+import { getMediaUrl } from '@/utils/filterResources';
+import type XGPlayer from 'xgplayer';
+import type { IPlayerOptions } from 'xgplayer';
 
-const HlsPlayer = require('xgplayer-hls.js');
-const FlvPlayer = require('xgplayer-flv.js');
+const HlsPlayer: typeof XGPlayer = require('xgplayer-hls.js');
+const FlvPlayer: typeof XGPlayer = require('xgplayer-flv.js');
 
-export default class IptvPlayer extends React.Component<any, any> {
-    private xgPlayer: XGPlayer | undefined;
+interface LiveResource {
+    sourceName: string;
+    src: string;
+}
 
-    constructor(props: any) {
-        super(props);
-        this.state = {
-            resource: Control.state,
-            error: false
-        };
-    }
-
-    private updateVolumeConf = () => {
-        setPlayConfig({ voice: this.xgPlayer!.volume });
-    };
-
-    private updateSpeedConf = () => {
-        setPlayConfig({ speed: this.xgPlayer!.playbackRate });
-    };
+export default class IptvPlayer extends React.Component {
+    private readonly resource = Control.state as LiveResource | undefined;
+    private readonly playerWrapper = React.createRef<HTMLDivElement>();
+    private player?: XGPlayer;
+    private failed = false;
+    state = { error: false };
 
     componentDidMount(): void {
-        if (!this.state.resource?.src) return;
-        const PlayerClass = (/\.m3u8$/i.test(new URL(this.state.resource.src).pathname)
-            ? HlsPlayer
-            : FlvPlayer) as any;
-        this.xgPlayer = new PlayerClass({
-            el: this.refs.iptvPlayer as any,
-            url: this.state.resource.src,
-            id: 'tomatox-iptv',
-            lang: 'zh-cn',
-            width: '100%',
-            height: '100%',
-            autoplay: false,
-            videoInit: true,
-            screenShot: true,
-            keyShortcut: 'on',
-            keyShortcutStep: { currentTime: 10, volume: 0.1 },
-            crossOrigin: true,
-            cssFullscreen: true,
-            volume: getPlayConfig().voice,
-            defaultPlaybackRate: getPlayConfig().speed,
-            playPrev: true,
-            playNextOne: true,
-            videoStop: true,
-            showList: true,
-            showHistory: true,
-            quitMiniMode: true,
-            videoTitle: true,
-            airplay: true,
-            closeVideoTouch: true,
-            ignores: ['replay'],
-            preloadTime: 20
-        });
-        this.xgPlayer?.on('error', () => this.setState({ error: true }));
-        this.xgPlayer?.play();
-        this.xgPlayer?.on('volumechange', this.updateVolumeConf);
-        this.xgPlayer?.on('playbackrateChange', this.updateSpeedConf);
+        if (this.resource) this.startPlayback();
+    }
+
+    private retryPlayback = () => {
+        if (this.failed) this.startPlayback();
+    };
+
+    private startPlayback() {
+        this.failed = false;
+        this.stopPlayback();
+        this.setState({ error: false });
+
+        const url = getMediaUrl(this.resource?.src ?? '');
+        const element = this.playerWrapper.current;
+        let player: XGPlayer | undefined;
+        const fail = () => {
+            if (this.player !== player || this.failed) return;
+            this.failed = true;
+            this.setState({ error: true });
+        };
+        if (!url || !element || !/\.(m3u8|flv)$/i.test(url.pathname)) {
+            fail();
+            return;
+        }
+
+        const PlayerClass = /\.m3u8$/i.test(url.pathname) ? HlsPlayer : FlvPlayer;
+        const config = getPlayConfig();
+        try {
+            const options: IPlayerOptions & Record<string, unknown> = {
+                el: element,
+                url: url.href,
+                id: 'tomatox-iptv',
+                lang: 'zh-cn',
+                width: '100%',
+                height: '100%',
+                autoplay: false,
+                videoInit: true,
+                screenShot: true,
+                keyShortcut: 'on',
+                keyShortcutStep: { currentTime: 10, volume: 0.1 },
+                crossOrigin: true,
+                cssFullscreen: true,
+                volume: config.voice,
+                defaultPlaybackRate: config.speed,
+                playPrev: true,
+                playNextOne: true,
+                videoStop: true,
+                showList: true,
+                showHistory: true,
+                quitMiniMode: true,
+                videoTitle: true,
+                airplay: true,
+                closeVideoTouch: true,
+                ignores: ['replay', 'error'],
+                preloadTime: 20
+            };
+            const nextPlayer = new PlayerClass(options);
+            player = nextPlayer;
+            this.player = nextPlayer;
+            nextPlayer.on('error', fail);
+            if (PlayerClass === HlsPlayer) {
+                nextPlayer.on('HLS_ERROR', ({ errorFatal }) => { if (errorFatal) fail(); });
+            }
+            nextPlayer.on('playing', () => {
+                if (this.player !== nextPlayer || !this.failed) return;
+                this.failed = false;
+                this.setState({ error: false });
+            });
+            nextPlayer.on('volumechange', () => {
+                if (this.player === nextPlayer) setPlayConfig({ voice: nextPlayer.volume });
+            });
+            nextPlayer.on('playbackrateChange', () => {
+                if (this.player === nextPlayer) setPlayConfig({ speed: nextPlayer.playbackRate });
+            });
+            nextPlayer.once('canplay', async () => {
+                if (this.player !== nextPlayer || !nextPlayer.paused) return;
+                try {
+                    await nextPlayer.play();
+                } catch (error) {
+                    const name = (error as Error)?.name;
+                    if (name !== 'NotAllowedError' && name !== 'AbortError') fail();
+                }
+            });
+        } catch {
+            fail();
+        }
+    }
+
+    private stopPlayback() {
+        const player = this.player;
+        this.player = undefined;
+        player?.pause();
+        player?.destroy();
     }
 
     componentWillUnmount(): void {
-        this.xgPlayer?.off('volumechange', this.updateVolumeConf);
-        this.xgPlayer?.off('playbackrateChange', this.updateSpeedConf);
-        this.xgPlayer?.destroy();
+        this.stopPlayback();
     }
 
     render(): React.ReactNode {
-        if (!this.state.resource) return <Alert type="info" message="请先输入直播地址" />;
+        if (!this.resource) return <Alert type="info" message="请先输入直播地址" />;
         return (
             <div className={[cssM.fullScreen, 'theme-content'].join(' ')}>
                 <div className={[cssM.playFullHeader, 'theme-header'].join(' ')}>
@@ -92,7 +140,7 @@ export default class IptvPlayer extends React.Component<any, any> {
                         <LeftOutlined /> 返回
                     </span>
                     <span>
-                        <span>{this.state.resource.sourceName}</span>
+                        <span>{this.resource.sourceName}</span>
                     </span>
                     <span>
                         <MinusOutlined
@@ -112,9 +160,10 @@ export default class IptvPlayer extends React.Component<any, any> {
                             />
                     </span>
                 </div>
-                <div ref={'iptvPlayer'} />
-                {this.state.error && <Alert className={cssM.playbackStatus} type="error"
-                    message="直播暂时无法播放，请检查播放地址" />}
+                <div ref={this.playerWrapper} />
+                {this.state.error && <Alert className={cssM.playbackStatus} type="error" showIcon
+                    message="直播暂时无法播放，请检查播放地址"
+                    action={<Button onClick={this.retryPlayback}>重试</Button>} />}
             </div>
         );
     }

@@ -1,10 +1,10 @@
-[![TOMATOX](docs/img/logo.png)](https://github.com/yanjiaxuan/TOMATOX/releases)
+[![TOMATOX](docs/img/logo.png)](https://github.com/YumengmengPC/TOMATOX/releases)
 # TOMATOX
 
 ### A Online video player with TypeScript, React, and Electron.
 - 🎞 内置 4K 60 帧公开短片，支持自定义 XML 视频源及 HLS、FLV 直播
 - 🎨 贯彻精致简洁的设计风格
-- 👑 PC全平台支持(Windows, Linux, MacOS)
+- 👑 支持 Windows x64 和 Linux x64
 - ✨ 新功能陆续上线中...
 
 ### About Project
@@ -61,20 +61,20 @@ You can also run do the following to start both in a single process:
 npm run start-dev
 ```
 
-## Packaging
-We use [Electron builder](https://www.electron.build/) to build and package the application. By default you can run the following to package for your current platform:
+## 打包与发布
+
+使用 electron-builder 生成 Windows x64 NSIS 安装包和 Linux x64 AppImage。分别在对应平台运行下列命令，产物保存在 `release/`。
 
 ```bash
-npm run dist
+npm run dist -- --win
+npm run dist -- --linux
 ```
 
-This will create a installer for your platform in the `release` folder.
+在 Linux 上下载 AppImage 后，赋予文件执行权限并运行。如果系统无法挂载 AppImage，可以加上 `--appimage-extract-and-run` 启动。
 
-You can make builds for specific platforms (or multiple platforms) by using the options found [here](https://www.electron.build/cli). E.g. building for all platforms (Windows, Mac, Linux):
+GitHub Actions 会在 PR 中运行测试和生产构建。推送与 `package.json` 版本一致的 `vX.Y.Z` 标签后，两个平台分别打包，安装包和更新元数据汇总到同一个 GitHub Release 草稿。
 
-```bash
-npm run dist -- -mwl
-```
+发布前在 Windows 11 x64 和 Ubuntu 24.04 x64 上验证首次启动、内置 4K 播放、自定义 XML 搜索和点播，以及 HLS 和 FLV 在断流后重试。Windows 还要从上一版覆盖安装并核对历史、收藏、视频源和设置。验收通过后公开草稿，并从两个平台的「关于」页面检查更新。
 
 ## Husky and Prettier
 This project comes with both Husky and Prettier setup to ensure a consistent code style. 

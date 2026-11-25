@@ -8,9 +8,9 @@ import {
     HeartFilled
 } from '@ant-design/icons';
 import { Control } from 'react-keeper';
-import { Alert, Button, message, Tag, Tabs } from 'antd';
+import { Alert, Button, message, Tabs } from 'antd';
 
-import XGPlayer from 'xgplayer';
+import XGPlayer, { IPlayerOptions } from 'xgplayer';
 import Indexed from '@/utils/db/indexed';
 import { TABLES } from '@/utils/constants';
 import cssM from './palyer.scss';
@@ -18,7 +18,23 @@ import { getPlayConfig, setPlayConfig } from '@/utils/db/storage';
 import { getMediaUrl, plainDescription } from '@/utils/filterResources';
 import { isCatalogVideo } from '@/utils/catalog';
 
-const HlsPlayer = require('xgplayer-hls.js');
+const HlsPlayer: typeof XGPlayer = require('xgplayer-hls.js');
+const bufferTimeout = 10_000;
+const progressInterval = 5_000;
+
+interface PlaybackAttempt {
+    drama: string;
+    src: string;
+    position: number;
+    hasPlayed: boolean;
+    failed: boolean;
+    player?: XGPlayer;
+    buffer?: AbortController;
+    objectUrl?: string;
+    lastSavedAt?: number;
+    lastSavedPosition?: number;
+    saving?: Promise<void>;
+}
 
 async function bufferClip(url: string, signal: AbortSignal, report: (percent: number) => void) {
     const limit = 64 * 1024 * 1024;
@@ -34,10 +50,7 @@ async function bufferClip(url: string, signal: AbortSignal, report: (percent: nu
         const { done, value } = await reader.read();
         if (done) break;
         received += value.byteLength;
-        if (received > limit) {
-            await reader.cancel();
-            throw new Error('高清影片超过预缓冲上限');
-        }
+        if (received > limit) throw new Error('高清影片超过预缓冲上限');
         chunks.push(value);
         const percent = length > 0 ? Math.min(99, Math.floor(received / length * 100)) : 0;
         if (percent !== reported) {
@@ -45,17 +58,16 @@ async function bufferClip(url: string, signal: AbortSignal, report: (percent: nu
             report(percent);
         }
     }
+    if (!received) throw new Error('高清视频为空');
     return new Blob(chunks, { type: 'video/mp4' });
 }
 
 export default class Player extends React.Component<any, any> {
-    private xgPlayer: XGPlayer | undefined;
     private sourceList: Map<string, Map<string, string>> = new Map();
     private selectedKey = '播放列表';
     private controlState: IplayResource | undefined;
     private playWrapper = React.createRef<HTMLDivElement>();
-    private bufferRequest?: AbortController;
-    private objectUrl?: string;
+    private attempt?: PlaybackAttempt;
     state = { curPlaySrc: '', curPlayDrama: '', isCollect: false, error: false, buffering: -1 };
 
     constructor(props: any) {
@@ -108,100 +120,200 @@ export default class Player extends React.Component<any, any> {
     }
 
     componentDidMount(): void {
-        void this.startPlayback(this.state.curPlaySrc, this.controlState?.historyOption?.lastPlayTime || 0);
+        if (!this.controlState) return;
+        window.addEventListener('pagehide', this.saveCurrentProgress);
+        const { curPlayDrama, curPlaySrc } = this.state;
+        const position = this.controlState.historyOption?.lastPlayTime ?? 0;
+        void this.startPlayback(curPlayDrama, curPlaySrc, position);
     }
 
     private playDrama(drama: string, url: string) {
-        this.setState({ curPlayDrama: drama, curPlaySrc: url });
-        void this.startPlayback(url, 0);
+        void this.startPlayback(drama, url, 0);
     }
 
     private stopPlayback() {
-        this.bufferRequest?.abort();
-        this.bufferRequest = undefined;
-        this.xgPlayer?.pause();
-        this.xgPlayer?.destroy();
-        this.xgPlayer = undefined;
-        if (this.objectUrl) URL.revokeObjectURL(this.objectUrl);
-        this.objectUrl = undefined;
+        const attempt = this.attempt;
+        if (!attempt) return;
+        this.attempt = undefined;
+        void this.saveProgress(attempt, true);
+        attempt.buffer?.abort();
+        attempt.player?.pause();
+        attempt.player?.destroy();
+        if (attempt.objectUrl) URL.revokeObjectURL(attempt.objectUrl);
     }
 
-    private async startPlayback(src: string, startAt: number) {
-        this.stopPlayback();
-        const url = getMediaUrl(src);
-        if (!url) {
-            this.setState({ error: true });
-            return;
-        }
-        let playAddress = url.href;
-        if (isCatalogVideo(playAddress)) {
-            const controller = new AbortController();
-            this.bufferRequest = controller;
-            this.setState({ buffering: 0, error: false });
-            try {
-                const clip = await bufferClip(playAddress, controller.signal, percent => {
-                    if (!controller.signal.aborted) this.setState({ buffering: percent });
-                });
-                if (controller.signal.aborted) return;
-                this.objectUrl = URL.createObjectURL(clip);
-                playAddress = this.objectUrl;
-            } catch {
-                if (controller.signal.aborted) return;
-            }
-        }
-        if (!this.playWrapper.current) return;
-        this.setState({ error: false, buffering: -1 });
-        const PlayerClass = /\.m3u8$/i.test(url.pathname) ? HlsPlayer : XGPlayer;
-        const config = getPlayConfig();
-        this.xgPlayer = new PlayerClass({
-            el: this.playWrapper.current,
-            url: playAddress,
-            id: 'tomatox',
-            lang: 'zh-cn',
-            width: '100%',
-            height: '100%',
-            autoplay: false,
-            videoInit: true,
-            screenShot: false,
-            preload: 'auto',
-            keyShortcut: 'on',
-            keyShortcutStep: { currentTime: 10, volume: 0.1 },
-            cssFullscreen: true,
-            volume: config.voice,
-            defaultPlaybackRate: config.speed,
-            playbackRate: [0.5, 1, 1.25, 1.5, 2],
-            playPrev: true,
-            playNextOne: true,
-            videoStop: true,
-            showList: true,
-            showHistory: true,
-            quitMiniMode: true,
-            videoTitle: true,
-            airplay: true,
-            closeVideoTouch: true,
-            ignores: ['replay'],
-            preloadTime: 20
-        });
-        if (startAt > 0) {
-            this.xgPlayer?.once('loadedmetadata', () => {
-                if (this.xgPlayer && startAt < this.xgPlayer.duration - 0.5) {
-                    this.xgPlayer.currentTime = startAt;
-                }
-            });
-        }
-        this.xgPlayer?.on('error', () => this.setState({ error: true }));
-        this.xgPlayer?.play();
-        this.xgPlayer?.on('ended', this.playNext);
-        this.xgPlayer?.on('volumechange', this.updateVolumeConf);
-        this.xgPlayer?.on('playbackrateChange', this.updateSpeedConf);
-    }
-
-    private updateVolumeConf = () => {
-        setPlayConfig({ voice: this.xgPlayer!.volume });
+    private retryPlayback = () => {
+        const attempt = this.attempt;
+        if (attempt?.failed) void this.startPlayback(attempt.drama, attempt.src, attempt.position, false);
     };
 
-    private updateSpeedConf = () => {
-        setPlayConfig({ speed: this.xgPlayer!.playbackRate });
+    private async startPlayback(drama: string, src: string, position: number, prebuffer = true) {
+        this.stopPlayback();
+        const attempt: PlaybackAttempt = { drama, src, position, hasPlayed: false, failed: false };
+        this.attempt = attempt;
+        this.setState({ curPlayDrama: drama, curPlaySrc: src, error: false, buffering: -1 });
+
+        const url = getMediaUrl(src);
+        const element = this.playWrapper.current;
+        const fail = () => {
+            if (this.attempt !== attempt || attempt.failed) return;
+            attempt.failed = true;
+            void this.saveProgress(attempt, true);
+            this.setState({ error: true });
+        };
+        if (!url || !element) {
+            fail();
+            return;
+        }
+
+        let playAddress = url.href;
+        if (prebuffer && isCatalogVideo(playAddress)) {
+            const controller = new AbortController();
+            attempt.buffer = controller;
+            const timeout = setTimeout(() => controller.abort(), bufferTimeout);
+            this.setState({ buffering: 0 });
+            try {
+                const clip = await bufferClip(playAddress, controller.signal, percent => {
+                    if (this.attempt === attempt && !controller.signal.aborted) {
+                        this.setState({ buffering: percent });
+                    }
+                });
+                if (this.attempt === attempt && !controller.signal.aborted) {
+                    attempt.objectUrl = URL.createObjectURL(clip);
+                    playAddress = attempt.objectUrl;
+                }
+            } catch {
+                // For the current video, let the player stream the original URL.
+            } finally {
+                clearTimeout(timeout);
+                controller.abort();
+                attempt.buffer = undefined;
+            }
+        }
+        if (this.attempt !== attempt) return;
+        this.setState({ buffering: -1 });
+        const PlayerClass = /\.m3u8$/i.test(url.pathname) ? HlsPlayer : XGPlayer;
+        const config = getPlayConfig();
+        try {
+            const options: IPlayerOptions & Record<string, unknown> = {
+                el: element,
+                url: playAddress,
+                id: 'tomatox',
+                lang: 'zh-cn',
+                width: '100%',
+                height: '100%',
+                autoplay: false,
+                videoInit: true,
+                screenShot: false,
+                preload: 'auto',
+                keyShortcut: 'on',
+                keyShortcutStep: { currentTime: 10, volume: 0.1 },
+                cssFullscreen: true,
+                volume: config.voice,
+                defaultPlaybackRate: config.speed,
+                playbackRate: [0.5, 1, 1.25, 1.5, 2],
+                playPrev: true,
+                playNextOne: true,
+                videoStop: true,
+                showList: true,
+                showHistory: true,
+                quitMiniMode: true,
+                videoTitle: true,
+                airplay: true,
+                closeVideoTouch: true,
+                ignores: ['replay', 'error'],
+                preloadTime: 20
+            };
+            const player = new PlayerClass(options);
+            attempt.player = player;
+            if (position > 0) {
+                player.once('loadedmetadata', () => {
+                    if (this.attempt === attempt && position < player.duration - 0.5) {
+                        player.currentTime = position;
+                    }
+                });
+            }
+            player.on('error', fail);
+            if (PlayerClass === HlsPlayer) {
+                player.on('HLS_ERROR', ({ errorFatal }) => { if (errorFatal) fail(); });
+            }
+            player.on('playing', () => {
+                if (this.attempt !== attempt) return;
+                attempt.hasPlayed = true;
+                if (attempt.failed) {
+                    attempt.failed = false;
+                    this.setState({ error: false });
+                }
+            });
+            player.on('timeupdate', () => {
+                if (this.attempt === attempt && !attempt.failed) void this.saveProgress(attempt);
+            });
+            player.on('pause', () => {
+                if (this.attempt === attempt) void this.saveProgress(attempt, true);
+            });
+            player.on('ended', () => {
+                if (this.attempt === attempt) this.playNext();
+            });
+            player.on('volumechange', () => {
+                if (this.attempt === attempt) setPlayConfig({ voice: player.volume });
+            });
+            player.on('playbackrateChange', () => {
+                if (this.attempt === attempt) setPlayConfig({ speed: player.playbackRate });
+            });
+            player.once('canplay', async () => {
+                if (this.attempt !== attempt || !player.paused) return;
+                try {
+                    await player.play();
+                } catch (error) {
+                    const name = (error as Error)?.name;
+                    if (name !== 'NotAllowedError' && name !== 'AbortError') fail();
+                }
+            });
+        } catch {
+            fail();
+        }
+    }
+
+    private saveProgress(attempt: PlaybackAttempt, force = false) {
+        const { player } = attempt;
+        const db = Indexed.instance;
+        if (!attempt.hasPlayed || !player || !db || !this.controlState) return;
+        const time = player.currentTime;
+        if (Number.isFinite(time) && (attempt.failed ? time > 0 : time >= 0)) {
+            attempt.position = time;
+        }
+        const now = Date.now();
+        if (attempt.lastSavedPosition === attempt.position ||
+            (!force && attempt.lastSavedAt !== undefined && now - attempt.lastSavedAt < progressInterval)) {
+            return attempt.saving;
+        }
+
+        attempt.lastSavedAt = now;
+        attempt.lastSavedPosition = attempt.position;
+        const saving = db.insertOrUpdateResource(TABLES.TABLE_HISTORY, {
+            ...this.controlState,
+            historyOption: {
+                lastPlayDrama: attempt.drama,
+                lastPlaySrc: attempt.src,
+                lastPlayTime: attempt.position,
+                lastPlayDate: now,
+                lastPlayDesc: `观看至 ${attempt.drama} ${Player.timeConverter(attempt.position)}`
+            }
+        }).catch(error => {
+            if (attempt.saving === saving) attempt.lastSavedPosition = undefined;
+            console.error(error);
+        });
+        attempt.saving = saving;
+        return saving;
+    }
+
+    private saveCurrentProgress = () => {
+        if (this.attempt) void this.saveProgress(this.attempt, true);
+    };
+
+    private closeWindow = async () => {
+        if (this.attempt) await this.saveProgress(this.attempt, true);
+        window.tomatox.close();
     };
 
     private static timeConverter(time: number) {
@@ -213,59 +325,31 @@ export default class Player extends React.Component<any, any> {
     }
 
     componentWillUnmount(): void {
-        if (!this.controlState || !this.xgPlayer) {
-            this.stopPlayback();
-            return;
-        }
-        const newData: IplayResource = {
-            ...this.controlState,
-            historyOption: {
-                lastPlayDrama: this.state.curPlayDrama,
-                lastPlaySrc: this.state.curPlaySrc,
-                lastPlayTime: this.xgPlayer?.currentTime || 0,
-                lastPlayDate: Date.now(),
-                lastPlayDesc: `观看至 ${this.state.curPlayDrama || ''} ${Player.timeConverter(
-                    this.xgPlayer?.currentTime || 0
-                )}`
-            }
-        };
-        void Indexed.instance!.insertOrUpdateResource(TABLES.TABLE_HISTORY, newData).catch(console.error);
-
+        window.removeEventListener('pagehide', this.saveCurrentProgress);
         this.stopPlayback();
     }
 
     descSources() {
-        const eles = [];
-        // @ts-ignore
-        for (const [key] of this.sourceList) {
-            eles.push(
-                <Tabs.TabPane tab={key} key={key}>
-                    {this.descSeries(this.sourceList.get(key)!)}
-                </Tabs.TabPane>
-            );
-        }
-        return eles;
+        return Array.from(this.sourceList, ([key, playList]) => (
+            <Tabs.TabPane tab={key} key={key}>
+                {this.descSeries(playList)}
+            </Tabs.TabPane>
+        ));
     }
 
     descSeries(playList: Map<string, string>) {
-        const eles = [];
-        // @ts-ignore
-        for (const [key] of playList) {
-            eles.push(
-                <span
-                    key={key}
-                    className={`${cssM.seriesTag} ${
-                        playList.get(key) === this.state.curPlaySrc ? cssM.seriesTagActive : ''
-                    }`}
-                    onClick={() => {
-                        const src = playList.get(key);
-                        if (src && this.state.curPlaySrc !== src) this.playDrama(key, src);
-                    }}>
-                    {key}
-                </span>
-            );
-        }
-        return eles;
+        return Array.from(playList, ([key, src]) => (
+            <span
+                key={key}
+                className={`${cssM.seriesTag} ${
+                    src === this.state.curPlaySrc ? cssM.seriesTagActive : ''
+                }`}
+                onClick={() => {
+                    if (src && this.state.curPlaySrc !== src) this.playDrama(key, src);
+                }}>
+                {key}
+            </span>
+        ));
     }
 
     render(): React.ReactNode {
@@ -304,11 +388,7 @@ export default class Player extends React.Component<any, any> {
                                 window.tomatox.toggleMaximized();
                             }}
                             />
-                        <CloseOutlined
-                            onClick={() => {
-                                window.tomatox.close();
-                            }}
-                            />
+                        <CloseOutlined onClick={this.closeWindow} />
                     </span>
                 </div>
                 <div className={cssM.playFullWrapper}>
@@ -319,7 +399,7 @@ export default class Player extends React.Component<any, any> {
                     )}
                     {this.state.error && (
                         <Alert className={cssM.playbackStatus} type="error" showIcon message="视频暂时无法播放"
-                            action={<Button onClick={() => this.startPlayback(this.state.curPlaySrc, 0)}>重试</Button>} />
+                            action={<Button onClick={this.retryPlayback}>重试</Button>} />
                     )}
 
                     <div className={[cssM.videoInfoWrapper, 'theme-content'].join(' ')}>

@@ -1,6 +1,6 @@
 {
   "name": "tomatox",
-  "version": "2.0.3",
+  "version": "2.0.4",
   "description": "A free fast beautiful online video player with electron.",
   "main": "./dist/main.js",
   "scripts": {
@@ -15,8 +15,7 @@
     "lint": "eslint --ext=jsx,js,tsx,ts src --fix",
     "test": "jest",
     "unpacked": "npm run build && electron-builder --dir",
-    "pack": "npm run build && electron-builder",
-    "release": "npm run build && electron-builder -p always",
+    "pack": "npm run build && electron-builder --publish never",
     "typecheck": "tsc --noEmit",
     "dist": "npm run pack --"
   },
@@ -74,19 +73,14 @@
       ]
     },
     "linux": {
-      "icon": "public/icon.png"
-    },
-    "mac": {
-      "icon": "public/icon.icns",
-      "category": "public.app-category.developer-tools",
-      "target": "default",
-      "extendInfo": {
-        "LSUIElement": 1
-      }
-    },
-    "snap": {
-      "publish": [
-        "github"
+      "icon": "public/icon.png",
+      "category": "AudioVideo;Player",
+      "artifactName": "${productName}-${version}-Linux-${arch}.${ext}",
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": ["x64"]
+        }
       ]
     },
     "nsis": {

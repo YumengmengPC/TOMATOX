@@ -1,46 +1,98 @@
-
-# main.yml
-
-# Workflow's name
-name: Build TOMATOX For Win/Mac/Linux
+name: TOMATOX CI and Release
 
 on:
+  pull_request:
   push:
     tags:
-      - v*.*.*
+      - 'v*.*.*'
+
+permissions:
+  contents: read
 
 jobs:
-  release:
-    runs-on: ${{ matrix.os }}
-    permissions:
-      contents: write
-
-    strategy:
-      matrix:
-        os: [windows-latest, macos-latest, ubuntu-latest]
-
+  check:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Check release tag
-        id: tag
-        shell: bash
-        run: |
-          subject=$(git for-each-ref --format='%(contents:subject)' "$GITHUB_REF")
-          if [ "$subject" = 'Manual release: Windows installer' ]; then
-            echo 'publish=false' >> "$GITHUB_OUTPUT"
-          else
-            echo 'publish=true' >> "$GITHUB_OUTPUT"
-          fi
       - uses: actions/setup-node@v4
-        if: steps.tag.outputs.publish == 'true'
         with:
           node-version: 22
+      - run: npm ci --legacy-peer-deps
+      - run: npm test -- --runInBand
+      - run: npm run build
 
-      - run: |
-          npm ci --legacy-peer-deps
-          npm run release
-        if: steps.tag.outputs.publish == 'true'
+  package:
+    if: github.ref_type == 'tag'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows
+            flag: --win
+            assets: |
+              release/TOMATOX-*-Windows-x64-Setup.exe
+              release/*.exe.blockmap
+              release/latest.yml
+          - os: ubuntu-latest
+            platform: linux
+            flag: --linux
+            assets: |
+              release/TOMATOX-*-Linux-x86_64.AppImage
+              release/latest-linux.yml
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Verify tag matches the package version
+        run: node -e "if (process.env.GITHUB_REF_NAME !== 'v' + require('./package.json').version) throw new Error('Tag must match package.json version')"
+      - run: npm ci --legacy-peer-deps
+      - run: npm test -- --runInBand
+      - run: npm run dist -- ${{ matrix.flag }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tomatox-${{ matrix.platform }}
+          path: ${{ matrix.assets }}
+          if-no-files-found: error
+
+  draft:
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: tomatox-*
+          path: artifacts
+          merge-multiple: true
+      - name: Prepare one release draft
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          windows="artifacts/TOMATOX-${version}-Windows-x64-Setup.exe"
+          linux="artifacts/TOMATOX-${version}-Linux-x86_64.AppImage"
+          assets=("$windows" "$windows.blockmap" "$linux" artifacts/latest.yml artifacts/latest-linux.yml)
+          for asset in "${assets[@]}"; do
+            if [[ ! -s "$asset" ]]; then
+              echo "Missing release asset $asset" >&2
+              exit 1
+            fi
+          done
+
+          if draft=$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft); then
+            if [[ "$draft" != true ]]; then
+              echo "Release $GITHUB_REF_NAME is already public" >&2
+              exit 1
+            fi
+            gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "${assets[@]}" --draft --verify-tag \
+              --title "TOMATOX $GITHUB_REF_NAME" --generate-notes
+          fi
