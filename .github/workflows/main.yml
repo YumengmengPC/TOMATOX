@@ -5,6 +5,15 @@ on:
   push:
     tags:
       - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag to build
+        required: true
+        type: string
+
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
 permissions:
   contents: read
@@ -23,7 +32,7 @@ jobs:
       - run: npm run build
 
   package:
-    if: github.ref_type == 'tag'
+    if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -44,11 +53,13 @@ jobs:
               release/latest-linux.yml
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
       - name: Verify tag matches the package version
-        run: node -e "if (process.env.GITHUB_REF_NAME !== 'v' + require('./package.json').version) throw new Error('Tag must match package.json version')"
+        run: node -e "if (process.env.RELEASE_TAG !== 'v' + require('./package.json').version) throw new Error('Tag must match package.json version')"
       - run: npm ci --legacy-peer-deps
       - run: npm test -- --runInBand
       - run: npm run dist -- ${{ matrix.flag }}
@@ -75,7 +86,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          version="${RELEASE_TAG#v}"
           windows="artifacts/TOMATOX-${version}-Windows-x64-Setup.exe"
           linux="artifacts/TOMATOX-${version}-Linux-x86_64.AppImage"
           assets=("$windows" "$windows.blockmap" "$linux" artifacts/latest.yml artifacts/latest-linux.yml)
@@ -86,13 +97,13 @@ jobs:
             fi
           done
 
-          if draft=$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft); then
+          if draft=$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft); then
             if [[ "$draft" != true ]]; then
-              echo "Release $GITHUB_REF_NAME is already public" >&2
+              echo "Release $RELEASE_TAG is already public" >&2
               exit 1
             fi
-            gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
+            gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
           else
-            gh release create "$GITHUB_REF_NAME" "${assets[@]}" --draft --verify-tag \
-              --title "TOMATOX $GITHUB_REF_NAME" --generate-notes
+            gh release create "$RELEASE_TAG" "${assets[@]}" --draft --verify-tag \
+              --title "TOMATOX $RELEASE_TAG" --generate-notes
           fi
